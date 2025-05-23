@@ -1,0 +1,234 @@
+<!DOCTYPE html> 
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Helmet Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@3/dist/email.min.js"></script>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #ffffff, #d1e8ff);
+            margin: 0;
+            padding: 0;
+            text-align: center;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        h1 {
+            margin: 10px 0;
+            color: #2a5298;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            grid-template-rows: repeat(3, 1fr);
+            gap: 20px;
+            width: 90%;
+            max-width: 1200px;
+        }
+
+        .quadrant {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            width: 100%;
+            min-height: 200px;
+        }
+
+        h2 {
+            color: #2a5298;
+            font-size: 18px;
+            margin-bottom: 10px;
+        }
+
+        canvas {
+            width: 100% !important;
+            height: 200px !important;
+        }
+
+        .lamp {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background-color: gray;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.2);
+            margin-top: 10px;
+        }
+
+        .connect-container button {
+            width: 90%;
+            height: 50px;
+            font-size: 16px;
+            font-weight: bold;
+            background: #2a5298;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+
+        .connect-container button:hover {
+            background: #1e3c72;
+        }
+
+        @media (max-width: 800px) {
+            .dashboard {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>Smart Helmet Dashboard</h1>
+
+    <div class="dashboard">
+        <div class="quadrant">
+            <h2>Humidity Graph</h2>
+            <canvas id="humidityChart"></canvas>
+        </div>
+        <div class="quadrant">
+            <h2>Temperature Graph</h2>
+            <canvas id="temperatureChart"></canvas>
+        </div>
+        <div class="quadrant">
+            <h2>Gas Sensor (MQ2) Graph</h2>
+            <canvas id="gasChart"></canvas>
+        </div>
+        <div class="quadrant">
+            <h2>Emergency Lamp</h2>
+            <div class="lamp" id="lamp"></div>
+            <p id="stabilityValue">Waiting for data...</p>
+        </div>
+        <div class="quadrant">
+            <h2>GPS Coordinates</h2>
+            <p id="gpsValue">Latitude: 13.036956, Longitude: 77.619606</p>
+        </div>
+        <div class="quadrant connect-container">
+            <button onclick="connectArduino()">Connect to LoRa Receiver</button>
+        </div>
+    </div>
+
+    <script>
+        emailjs.init("Cpe1PCO1FW-jjXASP");
+
+        let serialPort;
+        let serialReader;
+        let keepReading = false;
+        let serialBuffer = "";
+
+        async function connectArduino() {
+            try {
+                serialPort = await navigator.serial.requestPort();
+                await serialPort.open({ baudRate: 9600 });
+                serialReader = serialPort.readable.getReader();
+                keepReading = true;
+                console.log("Connected to LoRa Receiver ✅");
+                readSerialData();
+            } catch (error) {
+                console.error("Connection error:", error);
+            }
+        }
+
+        async function readSerialData() {
+            const decoder = new TextDecoder();
+            while (keepReading) {
+                try {
+                    const { value, done } = await serialReader.read();
+                    if (done) break;
+                    let data = decoder.decode(value);
+                    serialBuffer += data;
+
+                    let lines = serialBuffer.split("\n");
+                    serialBuffer = lines.pop(); 
+
+                    lines.forEach(line => {
+                        console.log("Received:", line);
+                        processSerialData(line.trim());
+                    });
+
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                } catch (error) {
+                    console.error("Serial read error:", error);
+                    break;
+                }
+            }
+        }
+
+        function processSerialData(data) {
+            let timeLabel = new Date().toLocaleTimeString();
+
+            let humidityMatch = data.match(/Humidity:(\d+\.\d+)%/);
+            let temperatureMatch = data.match(/Temp:(\d+\.\d+)C/);
+            let gasMatch = data.match(/MQ2:(\d+)/);
+            let stabilityMatch = data.match(/Stability:(\w+)/);
+            let gpsMatch = data.match(/GPS:Location:\s([-.\d]+)\s([-.\d]+)/);
+
+            if (humidityMatch) updateChart(humidityChart, timeLabel, parseFloat(humidityMatch[1]));
+            if (temperatureMatch) updateChart(temperatureChart, timeLabel, parseFloat(temperatureMatch[1]));
+            if (gasMatch) updateChart(gasChart, timeLabel, parseInt(gasMatch[1]));
+
+            if (stabilityMatch) {
+                let lamp = document.getElementById("lamp");
+                let status = stabilityMatch[1];
+                // console.log(status)
+                if (status === "Movement") {
+                    lamp.style.backgroundColor = "red";
+                    lamp.style.boxShadow = "0 0 20px red";
+
+                    emailjs.send("service_orbfmuw", "template_053qtt6", {
+                        to_email: "abiramaarjun75@gmail.com",
+                        message: "Movement Detected! Immediate attention required."
+                    })
+                    .then(() => console.log("Alert Email Sent"))
+                    .catch(err => console.error("EmailJS Error:", err));
+                } else {
+                    lamp.style.backgroundColor = "green";
+                    lamp.style.boxShadow = "0 0 20px green";
+                }
+
+                document.getElementById("stabilityValue").innerText = "Status: " + status;
+            }
+
+            if (gpsMatch) {
+                document.getElementById("gpsValue").innerText = `Latitude: ${gpsMatch[1]}, Longitude: ${gpsMatch[2]}`;
+            }
+        }
+
+        function updateChart(chart, label, value) {
+            if (chart.data.labels.length > 10) {
+                chart.data.labels.shift();
+                chart.data.datasets[0].data.shift();
+            }
+            chart.data.labels.push(label);
+            chart.data.datasets[0].data.push(value);
+            chart.update();
+        }
+
+        const humidityChart = new Chart(document.getElementById("humidityChart"), {
+            type: 'line', data: { labels: [], datasets: [{ label: "Humidity (%)", borderColor: "blue", data: [] }] }
+        });
+
+        const temperatureChart = new Chart(document.getElementById("temperatureChart"), {
+            type: 'line', data: { labels: [], datasets: [{ label: "Temperature (°C)", borderColor: "red", data: [] }] }
+        });
+
+        const gasChart = new Chart(document.getElementById("gasChart"), {
+            type: 'line', data: { labels: [], datasets: [{ label: "Gas Level (MQ2)", borderColor: "purple", data: [] }] }
+        });
+    </script>
+</body>
+</html>
